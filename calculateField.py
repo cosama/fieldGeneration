@@ -6,24 +6,9 @@ import numpy as np
 
 from gretinaGeometry import *
 from agataGeometry import *
+from stripDetector import *
 
-class OuterContact(SubDomain):
-    def inside(self, x, on_boundary):
-        r = sqrt(x[0]*x[0] + x[1]*x[1])
-        return on_boundary and x[2] < 90.
-
-class InnerContact(SubDomain):
-    def inside(self, x, on_boundary):
-        r = sqrt(x[0]*x[0] + x[1]*x[1])
-        return on_boundary and r < 7. and x[2] > 0.1
-
-class TopContact(SubDomain):
-    def inside(self, x, on_boundary):
-        return on_boundary and near(x[2],0)
-
-class BottomContact(SubDomain):
-    def inside(self, x, on_boundary):
-        return on_boundary and near(x[2], 5.)
+parameters['allow_extrapolation'] = True
     
 def Solver(mesh, V, f, uOut, uCore, cOut, cCore):
     epsilon0 = Constant(8.8541878E-15)
@@ -47,49 +32,35 @@ def Solver(mesh, V, f, uOut, uCore, cOut, cCore):
     solver.solve()
     return u
 
-def BuildPlanar(thickness):
-    mesh = Mesh()
-    # Define 3D geometry
-    box = Box(Point(0, 0, 0), Point(80., 80., thickness))
-
-    print("\nBuilding mesh for simple planar ({} mm thick).".format(thickness))
-    generator = CSGCGALMeshGenerator3D()
-    generator.parameters["edge_size"] = 0.05
-    generator.parameters["facet_angle"] = 25.0
-    generator.parameters["facet_size"] = 0.05
-    
-    mesh = generator.generate(CSGCGALDomain3D(box))
-    return mesh
-
-
 def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=None, xtalDepletion=None):
 
     # Define geometry
     if (detType == "planar"):
-        mesh = BuildPlanar(5.)
+        mesh = BuildPlanarMesh(20., 20., 10.)
 
     if (detType == "coaxG"):
-        xtaltype = 'A'
-        mesh = BuildGRETINAMesh(xtaltype)
+        if xtalType is None:
+            xtalType = 'A'
+        mesh = BuildGRETINAMesh(xtalType)
 
     if (detType == "coaxA"):
-        xtaltype = 'A'
-        mesh = BuildAGATAMesh(xtaltype)
-
+        if xtalType is None:
+            xtalType = 'A'
+        mesh = BuildAGATAMesh(xtalType)
 
     sub_domains = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
     sub_domains.set_all(0)
 
     if (detType == "coaxG" or detType == "coaxA"):
-        outerContact = OuterContact()
-        outerContact.mark(sub_domains,1)
-        innerContact = InnerContact()
+        outerContact = CompiledSubDomain("on_boundary && !near(x[2], depth) && (near(x[2], 0.) || sqrt(x[0]*x[0]+x[1]*x[1]) > r)", depth = 90., r = 20.)
+        outerContact.mark(sub_domains,2)
+        innerContact = CompiledSubDomain("on_boundary && !near(x[2], 0.) && sqrt(x[0]*x[0]+x[1]*x[1]) < r", r = 7.)
         innerContact.mark(sub_domains, 7)
 
     if (detType == "planar"):
-        outerContact = BottomContact()
-        outerContact.mark(sub_domains, 1)
-        innerContact = TopContact()
+        outerContact = CompiledSubDomain("on_boundary && near(x[2],thickness) && x[0]%pitch < gap"), thickness=5., pitch = 1., gap = 0.5)
+        outerContact.mark(sub_domains, 2)
+        innerContact = CompiledSubDomain("on_boundary && near(x[2], 0.) && x[1]%pitch < gap"), pitch = 1., gap = 0.5)
         innerContact.mark(sub_domains, 7)
 
     meshfile = File('mesh.pvd')
@@ -106,6 +77,7 @@ def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=N
     # Scale impurities to reproduce depletion voltage
     if (fieldType == "impurity" or fieldType == "all"):
         fScale = 1.0
+        fScaleLastDepleted = 1.0
         iScale = 0.5
 
         if xtalDepletion is None:
@@ -128,15 +100,16 @@ def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=N
             maxV = np.amax(vertex_values_u)
             print("f={} -- max = {}, depleted = {}".format(fScale, maxV, near(maxV, xtalDepletion, 1E-8)))
             if (near(maxV, xtalDepletion, 1E-8)):
+                fScaleLastDepleted = fScale
                 fScale = fScale + iScale
             if not near(maxV, xtalDepletion, 1E-8):
                 fScale = fScale - iScale
             iScale = iScale/2.
             
-        print("\nTo match depletion voltage ({} V), impurities scaled by {} -- rho0 = {}, drho = {}.".format(xtalDepletion, fScale, irho0, idrho))
-        rho0 = irho0
-        drho = idrho
-        
+        rho0 = rho0*fScaleLastDepleted
+        drho = drho*fScaleLastDepleted
+        print("\nTo match depletion voltage ({} V), impurities scaled by {} -- rho0 = {}, drho = {}.".format(xtalDepletion, fScaleLastDepleted, irho0, idrho))
+    
     if (fieldType == "eField" or fieldType == "all"):
         
         # Calculate electric potential first
@@ -147,6 +120,10 @@ def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=N
         if drho is None:
             drho = 0.0
 
+        if fieldType == "eField":
+            irho0 = rho0
+            idrho = drho
+            
         u_Out = Constant(0.0)
         u_Core = Constant(xtalHV)
 
@@ -156,12 +133,30 @@ def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=N
         potentialfile = File('potential.pvd')
         potentialfile << u
 
+        print("\nSolved potential, now getting field vector...")
+        
         fieldVec = VectorFunctionSpace(mesh, "CG", 1)
-        gradu = project(grad(u), fieldVec)
-    
+        gradu = project(grad(u), fieldVec, solver_type = "mumps")
+
         fieldFile = File('field.pvd')
         fieldFile << gradu  
 
+        tree = mesh.bounding_box_tree()
+
+        fileOut = open('./fieldOutput.dat', 'w+')
+        print("# x y z Ex Ey Ez |E| V", file=fileOut)
+        
+        for i,x in enumerate(np.linspace(-43., 43., 87.)):
+            for j,y in enumerate(np.linspace(-43., 43., 87.)):
+                for k,z in enumerate(np.linspace(-1., 93., 95.)):
+                    if tree.compute_first_collision(Point(x,y,z)) < (2 ** 32 -1):
+                        voltage = u(Point(x,y,z))
+                        gradV = gradu(Point(x,y,z))
+                        Emag = np.sqrt(gradV[0]*gradV[0] + gradV[1]*gradV[1] + gradV[2]*gradV[2])
+                        print("{:.5f}\t{:.5f}\t{:.5f}\t{:.6E}\t{:.6E}\t{:.6E}\t{:.6E}\t{:.6E}".format(x/1000.,y/1000.,z/1000.,-gradV[0]*1000.,-gradV[1]*1000.,-gradV[2]*1000.,Emag*1000.,voltage*1000.), file=fileOut)
+                    else:
+                        print("{:.5f}\t{:.5f}\t{:.5f}\t{:.6E}\t{:.6E}\t{:.6E}\t{:.6E}\t{:.6E}".format(x/1000.,y/1000.,z/1000.,0.0,0.0,0.0,0.0,0.0), file=fileOut)
+        
     if (fieldType == "wPot" or fieldType == "all"):
 
         # Now solve for weighting potentials (all segments + CC)

@@ -7,22 +7,27 @@ import numpy as np
 def BuildGRETINAMesh(type):
     mesh = Mesh()
     # Define 3D geometry
-    cylinder = Cylinder(dolfin.Point(0,0,0), dolfin.Point(0,0,90), 40., 40., 50);
-    cc = Cylinder(Point(0,0,12), Point(0,0,90), 6., 6., 50)
+    cylinder = Cylinder(dolfin.Point(0,0,0), dolfin.Point(0,0,90), 40., 40., 50); # cylinder at back
+    cc = Cylinder(Point(0,0,12), Point(0,0,90), 6., 6., 50) # central bore cutout
+    taperDepth = 90. - (11.0/tan(radians(55.0)))
+    cone = Cone(Point(0,0,90), Point(0,0,taperDepth), 11., 90)
     if (type == 'A'):
         quad = Surface3D("gretinaA.off")
         print("\nBuilding mesh for GRETINA geometry (type {} crystal).".format(type))
     if (type == 'B'):
         quad = Surface3D("gretinaB.off")
         print("\nBuilding mesh for GRETINA geometry (type {} crystal).".format(type))
-    g3d = (cylinder * quad)-cc
+    g3d = (cylinder * quad)-cc-cone
     
-    generator = CSGCGALMeshGenerator3D()
-    generator.parameters["edge_size"] = 0.01
-    generator.parameters["facet_angle"] = 25.0
-    generator.parameters["facet_size"] = 0.01
-    
+    generator = CSGCGALMeshGenerator3D()    
     mesh = generator.generate(CSGCGALDomain3D(g3d))
+    
+    # Refine mesh at the surface to get the electrodes better...
+    cell_markers = MeshFunction("bool", mesh, 0)
+    cell_markers.set_all(False)
+    surface = CompiledSubDomain("on_boundary && !near(x[2], depth) && (near(x[2], 0.) || sqrt(x[0]*x[0]+x[1]*x[1]) > r)", depth = 90., r = 20.)
+    surface.mark(cell_markers, True)
+    mesh = refine(mesh, cell_markers)
     return mesh
 
 def GetGRETINAOuterWP(type, seg):

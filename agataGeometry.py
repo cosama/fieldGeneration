@@ -4,6 +4,16 @@ from mshr import *
 from math import *
 import numpy as np
 
+class OuterContact(SubDomain):
+    def inside(self, x, on_boundary):
+        r = sqrt(x[0]*x[0] + x[1]*x[1])
+        return on_boundary and not near(x[2],90.) and (near(x[2], 0.) or r > 20.)
+
+class InnerContact(SubDomain):
+    def inside(self, x, on_boundary):
+        r = sqrt(x[0]*x[0] + x[1]*x[1])
+        return on_boundary and r < 7. and x[2] > 0.1
+
 def BuildAGATAMesh(type):
     mesh = Mesh()
     # Define 3D geometry
