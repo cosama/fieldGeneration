@@ -58,9 +58,9 @@ def SolveField(fieldType, detType, xtalType=None, xtalHV=None, rho0=None, drho=N
         innerContact.mark(sub_domains, 7)
 
     if (detType == "planar"):
-        outerContact = CompiledSubDomain("on_boundary && near(x[2],thickness) && x[0]%pitch < gap"), thickness=5., pitch = 1., gap = 0.5)
+        outerContact = CompiledSubDomain("on_boundary && near(x[2],thickness) && fmod(x[0],pitch) < gap", thickness=5., pitch = 1., gap = 0.5)
         outerContact.mark(sub_domains, 2)
-        innerContact = CompiledSubDomain("on_boundary && near(x[2], 0.) && x[1]%pitch < gap"), pitch = 1., gap = 0.5)
+        innerContact = CompiledSubDomain("on_boundary && near(x[2], 0.) && fmod(x[1],pitch) < gap", pitch = 1., gap = 0.5)
         innerContact.mark(sub_domains, 7)
 
     meshfile = File('mesh.pvd')
